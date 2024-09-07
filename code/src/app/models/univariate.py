@@ -9,21 +9,6 @@ def detect_univariate_statistical(
     return (df_out, [0,0,0], "No ensemble chosen.")
 
 
-
-
-
-def check_standard_deviation(val:float,
-                             mean:float,
-                             sd:float,
-                             min_num_sd:int):
-    """
-    Check if a given value is a specified number of 
-    standard deviations away from the mean
-    """"
-    if (abs(val - mean) < (min_num_sd * sd)):
-        return abs(val - mean)/(min_num_sd * sd)
-    return 1.0
-
 ## We also need a function to determine the median absolute devation 
 #  from the median, since the code is similar to the 
 #  check_standard_deviation check we can abstract a more general
@@ -106,3 +91,13 @@ def run_tests(dataframe):
     iqr = p75 - p25
     median = dataframe.value.median()
     mad = robust.mad(dataframe.value)
+    caluculations = {
+        "mean": mean, "sd": sd, "p25": p25,
+        "p75": p75, "iqr": iqr, "median": median,
+        "mad":mad
+    }
+    dataframe["sds"] = [check_sd(val, mean, sd, 3.0) for val in dataframe.value]
+    dataframe["mads"] = [check_mad(val, median, mad, 3.0) for val in dataframe.value]
+    dataframe["iqrs"] = [check_iqr(val, median, p25, p75, iqr, 1.5) for val in dataframe.value]
+    
+    return dataframe, caluculations
