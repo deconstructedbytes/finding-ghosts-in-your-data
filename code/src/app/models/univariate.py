@@ -1,7 +1,9 @@
 import pandas as pd
+import numpy as np
+from statsmodels import robust
 
 def detect_univariate_statistical(
-        df,
+        dataframe,
         sensitivity_score,
         max_fractional_anomalies
 ):
@@ -91,7 +93,7 @@ def run_tests(dataframe):
     iqr = p75 - p25
     median = dataframe.value.median()
     mad = robust.mad(dataframe.value)
-    caluculations = {
+    calculations = {
         "mean": mean, "sd": sd, "p25": p25,
         "p75": p75, "iqr": iqr, "median": median,
         "mad":mad
@@ -100,4 +102,59 @@ def run_tests(dataframe):
     dataframe["mads"] = [check_mad(val, median, mad, 3.0) for val in dataframe.value]
     dataframe["iqrs"] = [check_iqr(val, median, p25, p75, iqr, 1.5) for val in dataframe.value]
     
-    return dataframe, caluculations
+    return (dataframe, calculations)
+    
+def score_results(
+        dataframe,
+        weights
+):
+    """
+    Take a dataframe and dictionary of weights
+    """
+    return dataframe.assign(anomaly_score=(
+        dataframe["sds"] * weights["sds"] + 
+        dataframe["iqrs"] * weights["iqrs"] +
+        dataframe["mads"] * weights["mads"]
+    ))
+
+def determine_outliers(
+        dataframe,
+        sensitivity_score,
+        max_fractional_anomalies
+):
+    sensitivity_score = (100 -  sensitivity_score) / 100.0
+    max_fractional_anomaly_score = np.quantile(dataframe.anomaly_score,
+                                           1.0 - max_fractional_anomalies)
+    if max_fractional_anomaly_score > sensitivity_score and max_fractional_anomalies < 1.0:
+        sensitivity_score = max_fractional_anomaly_score
+        
+    return dataframe.assign(
+        is_anomaly=(dataframe.anomaly_score > sensitivity_score)
+        )
+    
+
+
+def detect_univariate_statistical(
+        dataframe,
+        sensitivity_score,
+        max_fractional_anomalies
+):
+    weights = {
+        "sds": 0.25,
+        "iqrs": 0.35,
+        "mads": 0.45
+    }
+    #print(dataframe)
+    if (dataframe.value.count() < 3):
+        return (dataframe.assign(is_anomaly=False, anomaly_score=0.0), weights, "Must have minimum of 3 items for anomaly detection")
+    elif (max_fractional_anomalies <= 0.0 or max_fractional_anomalies > 1.0):
+        return (dataframe.assign(is_anomaly=False, anomaly_score=0.0), weights, "Must have valid max fraction of anomalies, 0 < x <= 1.0")
+    elif (sensitivity_score <= 0 or sensitivity_score > 100):
+        return (dataframe.assign(is_anomaly=False, anomaly_score=0.0), weights, "Must have valid sensitivity score, 0 < x <= 100.0")
+    else:
+        df_test, calculations = run_tests(dataframe)
+        df_scored = score_results(df_test, weights)
+        df_out = determine_outliers(df_scored, sensitivity_score, max_fractional_anomalies)
+        return  (df_out, weights, {"message" : "Ensemble of [mean +/- 3*SD, median +/- 3*MAD, median +/- 1.5*IQR],",
+                                "calculations": calculations}) 
+
