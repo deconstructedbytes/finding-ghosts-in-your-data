@@ -1,6 +1,123 @@
 import pandas as pd
 import numpy as np
 from statsmodels import robust
+from scipy.stats import shapiro, normaltest, anderson, boxcox
+import scikit_posthocs as ph
+import math
+
+def check_shapiro(col, alhpa=0.5):
+    """
+    Statistics based hypothesis test to check for normality using
+    a null hypotheis if the p-value is low the hypothesis is rejected
+    and the test assumes the data is not normally distributed
+    """
+    return check_basic_normal_test(col, alpha, "Shapiro-Wilf test", shapiro)
+
+def check_dagostino(col, alpha=0.5):
+    """
+    Statistics test to determine how much skewness and kurtosis a dataset
+    contains. Skewness = measure of tails, longer left indicates negative skew, 
+    longer right indicates positive skew. A Dataset can also have 0 skew.
+    Kurtosis is the measure of how much of the dataset is inside the skew
+    """
+    return check_basic_normal_test(col, alpha, "D'Agostino's K^2 test", normaltest)
+
+def check_basic_normal_test(col, alpha, name, f):
+    """
+    General setup function that takes 
+    the dataset, alpha, name and specific normality checking
+    function as inputs and standardizes the output
+    """
+    stat, p = f(col)
+    return ( (p > alpha), ( f"{name} test, W = {stat}, p = {p}, alpha = {alpha}. " ) )
+
+def check_anderson(col):
+    """
+    Normality test similar to Shapiro but it performs at different 
+    significance levels
+    """
+    anderson_normal = True
+    return_str = "Anderson-Darling Test. "
+    result = anderson(col)
+    return_str = return_str += f"Result statistic: {result.statistic}"
+    for i in range(len(result.critical_values)):
+        sl, cv = result.significance_levl[i], result.critical_values[i]
+        if result.statistic < cv:
+            return_str = return_str += f"Significance Level {sl}: Critical Value = {cv}, looks normally distributed. "
+        else:
+            anderson_normal = False
+            return_str += f"Significance Level {sl}: Critical Value = {cv}, does NOT look normally distributed. "
+    return (anderson_normal, return_str)
+
+def is_normally_distributed(col):
+    """
+    Obtained the characteristics of the col
+    depending on the characters before one of more tests
+    """
+    alpha = 0.05
+
+    col_size = len(col)
+
+    if col_size < 5000:
+        (shapiro_normal, shapiro_exp) = check_shapiro(col, alpha)
+    else:
+        shapiro_normal = True
+        shapiro_exp = f"Shapiro-Wilk test did not run because n > 5k. n = {col_size}"
+    if col_size >= 8:
+        (dagostino_normal, dagostino_exp) = check_dagostino(col, alpha)
+    else:
+        dagostino_normal = True
+        dagostino_exp = f"D'Agostino test did not run because n < 8. n = {col_size}"
+
+    (anderson_normal, anderson_exp) = check_dagostino(col)
+    diagnostics = {
+        "Shapiro-Wilk": shapiro_exp,
+        "Anderson": anderson_exp,
+        "D'Agostino": dagostino_exp
+    }
+    return (shapiro_normal, dagostino_normal, anderson_normal)
+
+def normalize(col):
+    """
+    Perform box-cox normalization on the middle 
+    80% of the given column
+    """
+    l = len(col)
+    col_sort = sorted(col)
+    col80 = col_sort[math.floor(.1 * l) : math.floor(.9 * l)]
+    temp_data = fitted_lambda = boxcox(col80)
+    fitted_data = boxcox(col, fitted_lambda)
+    return (fitted_data, fitted_lambda)
+
+def perform_normalization(base_calculations, df):
+    """
+    Normalize col
+    """
+    use_fitted_results = False
+    fitted_data = None
+    (is_naturally_normal, natural_normality_checks) = is_normally_distributed(df["value"])
+    diagnostics = {
+                   "Initial normalizaty checks" : natural_normality_checks
+                   }
+    if is_naturally_normal:
+        fitted_data = df["value"]
+        use_fitted_results = True
+
+    if ( (not is_naturally_normal)
+        and base_calculations["min"] < base_calculations["max"]
+        and base_calculations["min"] > 0 
+        and len(df["value"]) >= 8 ):
+        (fitted_data, fitted_lambda) = normalize(df["value"])
+        (is_fitted_normal, fitted_normality_checks) = is_normally_distributed(fitted_data)
+        use_fitted_results = True
+        diagnostics["Fitted Lambda"] = fitted_lambda
+        diagnostics["Fitted normality checks"] = fitted_normality_checks
+    else:
+        has_variance = base_calculations["min"] < base_calculations["max"]
+        all_gt_zero = base_calculations["min"] > 0
+        enough_observations = len(df["value"]) >= 8
+        diagnostics["Fitting Status"] = f"Elided for space. Variance: {has_variance}, Values Zero: {all_gt_zero}, Observations Seen: {enough_observations}"
+    return (use_fitted_results, fitted_data, diagnostics)
 
 def detect_univariate_statistical(
         dataframe,
@@ -81,29 +198,123 @@ def check_iqr(val:float,
             return 1.0
         
 
+def perform_statistical_calculations(col):
+     """
+    Input: col name perform calculations needed for process
+    returns a dictionary of the calculations
+    """
+    mean = col.mean()
+    sd = col.std()
+    # Inter-Quartile Range (IQR) = 75th percentile - 25th percentile
+    p25 = np.quantile(col, 0.25)
+    p75 = np.quantile(col, 0.75)
+    iqr = p75 - p25
+    median = col.median()
+    # Median Absolute Deviation (MAD)
+    mad = robust.mad(col)
+    min = col.min()
+    max = col.max()
+    len = len(col.shape)
+
+    return { "mean": mean, "sd": sd, "min": min, "max": max,
+        "p25": p25, "median": median, "p75": p75, "iqr": iqr, "mad": mad, "len": len }
+        
+
 def run_tests(dataframe):
     """
     Pandas dataframe containing univariate data to perform 
     anomaly detection against
     """
-    mean = dataframe.value.mean()
-    sd = dataframe.value.std(0)
-    p25 = np.quantile(dataframe.value, 0.25)
-    p75 = np.quantile(dataframe.value, 0.75)
-    iqr = p75 - p25
-    median = dataframe.value.median()
-    mad = robust.mad(dataframe.value)
-    calculations = {
-        "mean": mean, "sd": sd, "p25": p25,
-        "p75": p75, "iqr": iqr, "median": median,
-        "mad":mad
+    base_calculations = perform_statistical_calculations(dataframe.value)
+    (use_fitted_results, fitted_data, normalization_diagnostics) = perform_normalization(
+        base_calculations, dataframe
+        )
+    
+    b = base_calculations
+
+    dataframe["sds"] = [check_sd(val, b["mean"], b["sd"], 3.0) for val in dataframe.value]
+    dataframe["mads"] = [check_mad(val, b["median"], b["mad"], 3.0) for val in dataframe.value]
+    dataframe["iqrs"] = [check_iqr(val, b["median"], b["p25"], b["p75"], b["iqr"], 1.5) for val in dataframe.value]
+    
+    tests_run = {
+        "sds" = 1,
+        "mads" = 1,
+        "irqs" = 1,
+        "grubbs" = 0,
+        "gesd" = 0,
+        "dixon" = 0
     }
-    dataframe["sds"] = [check_sd(val, mean, sd, 3.0) for val in dataframe.value]
-    dataframe["mads"] = [check_mad(val, median, mad, 3.0) for val in dataframe.value]
-    dataframe["iqrs"] = [check_iqr(val, median, p25, p75, iqr, 1.5) for val in dataframe.value]
-    
-    return (dataframe, calculations)
-    
+
+    df["grubbs"] = -1
+    df["gesd"] = -1
+    df["dixon"] = -1
+
+    if (use_fitted_results):
+        df["fitted_value"] = fitted_data
+        col = df["fitted_value"]
+        c = perform_statistical_calculations(col)
+    else:
+        diagnostics["Extended tests"] = "Did not run extended test because the dataset was not normal and could not be noramlized"
+    return (dataframe, tests_run, diagnostics)
+
+### Grubbs checks
+def check_grubbs(col):
+    "performs grubbs check -> returns outliers"
+    out = ph.outliers_grubbs(col)
+    return find_differences(col, out)
+
+def find_differences(col, out):
+    # Convert column and output to sets to see what's missing.
+    # Those are the outliers that we need to report back.
+    scol = set(col)
+    sout = set(out)
+    sdiff = scol - sout
+
+    res = [0.0 for val in col]
+    # Find the positions of missing inputs and mark them
+    # as outliers.
+    for val in sdiff:
+        indexes = col[col == val].index
+        for i in indexes: 
+            res[i] = 1.0
+
+### Check generalized extreme Studentized deviate test (GESD)
+def check_gesd(col, max_num_outliers):
+  out = ph.outliers_gesd(col, max_num_outliers)
+  return find_differences(col, out)
+
+### Check Dixon 
+def check_dixon(col):
+    q95 = [0.97, 0.829, 0.71, 0.625, 0.568, 0.526, 0.493, 0.466,
+    0.444, 0.426, 0.41, 0.396, 0.384, 0.374, 0.365, 0.356,
+    0.349, 0.342, 0.337, 0.331, 0.326, 0.321, 0.317, 0.312,
+    0.308, 0.305, 0.301, 0.29]
+
+    Q95 = {n:q for n, q in zip(range(3, len(q95) + 1), q95)}
+    Q_mindiff, Q_maxdiff = (0,0), (0,0)
+    sorted_data = sorted(col)
+    Q_min = (sorted_data[1] - sorted_data[0])
+    try:
+        Q_min = Q_min / (sorted_data[-1] - sorted_data[0])
+    except ZeroDivisionError:
+        pass
+    Q_mindiff = (Q_min - Q95[len(col)], sorted_data[0])
+    Q_max = abs(sorted_data[-2] - sorted_data[-1])
+    try:
+        Q_max = Q_max / abs(sorted_data[0] - sorted_data[-1])
+    except ZeroDivisionError:
+        pass
+    Q_maxdiff = (Q_max - Q95[len(col)], sorted_data[-1])
+    res = [0.0 for val in col]
+    if Q_maxdiff[0] >= 0:
+        indexes = col[col == Q_maxdiff[1]].index
+    for i in indexes: res[i] = 1.0
+        if Q_mindiff[0] >= 0:
+    indexes = col[col == Q_mindiff[1]].index
+    for i in indexes: res[i] = 1.0
+        return res
+
+
 def score_results(
         dataframe,
         weights
@@ -132,7 +343,6 @@ def determine_outliers(
         is_anomaly=(dataframe.anomaly_score > sensitivity_score)
         )
     
-
 
 def detect_univariate_statistical(
         dataframe,
